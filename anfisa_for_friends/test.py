@@ -61,7 +61,7 @@ def read_text_file_asserting_content(
             cleared_ = '\n'.join(map(str.strip, cleared_.split('\n')))
         return cleared_
 
-    with open(file_path, 'r') as fh:
+    with open(file_path, 'r', encoding='utf8') as fh:
         current_content = fh.read()
         current_content_cleared = clear_content(current_content)
         if expect_content:
