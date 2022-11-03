@@ -2,6 +2,7 @@
 
 import difflib
 import os
+import pytest
 import re
 import sys
 from abc import ABC
@@ -19,8 +20,6 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Union
-
-import pytest
 
 
 def read_text_file_asserting_content(
@@ -61,7 +60,7 @@ def read_text_file_asserting_content(
             cleared_ = '\n'.join(map(str.strip, cleared_.split('\n')))
         return cleared_
 
-    with open(file_path, 'r', encoding='utf8') as fh:
+    with open(file_path, 'r', encoding='utf-8') as fh:
         current_content = fh.read()
         current_content_cleared = clear_content(current_content)
         if expect_content:
@@ -217,32 +216,6 @@ class CompareDiffWithAuthor(ABC):
         )
 
     @property
-    def how_fix_msg(self):
-        """
-        Template of message for student.
-        Redefined in descendant classes to make it human-readable.
-        """
-        if self.student_item:
-            return (
-                'Попробуйте вставить {{checked_item_name}|accs_sing} '
-                'перед, после или вместо {{checked_item_name}|gent_sing} '
-                '\n\n`{student_item}`\n\n'
-                'В последнем случае в {{checked_item_name}|accs_sing} '
-                'необходимо внести следующие изменения '
-                'после строки прекода №{diffs_to_make_line_pos} '
-                '(строки комментариев не учитываются): '
-                '\n'
-                '`\n{diffs_to_make_text}\n`'
-                '(где `-` - удалить, `+` - добавить, `?` - позиция различий).'
-            )
-        else:
-            return (
-                'Изменения необходимо внести '
-                'после строки прекода №{diffs_to_make_line_pos} '
-                '(строки комментариев не учитываются).'
-            )
-
-    @property
     def remove_or_edit_item_msg(self):
         """
         Template of message for student.
@@ -278,30 +251,34 @@ class CompareDiffWithAuthor(ABC):
         If differences are found, YapTestingException is raised with a message
         showing the difference.
         """
-        for (
-                changed,  # callback looking up differences
-                except_if_diff  # callback raising exception if diff found
-        ) in (
-                (
-                        # removed items checked 1st as they come first in
-                        # `difflib.ndiff` output
-                        partial(removed, only_1st_diffs=False),
-                        self.except_if_removed_diff
-                ),
-                (
-                        partial(added, only_1st_diffs=False),
-                        self.except_if_added_diff
-                ),
-        ):
-            changed_author, changed_author_ixs = changed(
+
+        def compare(change_cbk: Callable, except_if_diff_cbk: Callable):
+            """
+            
+            Args:
+                change_cbk: callback looking up differences
+                except_if_diff_cbk: callback raising exception if diff found
+            Returns: None
+
+            """
+            changed_author, changed_author_ixs = change_cbk(
                 self.diff_precode_author, diff_from=self.precode_items)
-            changed_student, changed_student_ixs = changed(
+            changed_student, changed_student_ixs = change_cbk(
                 self.diff_precode_student, diff_from=self.precode_items)
             self.compare_diff_with_author(
                 changed_author, changed_author_ixs, changed_student,
                 changed_student_ixs,
-                except_if_diff=except_if_diff
+                except_if_diff=except_if_diff_cbk
             )
+
+        compare(
+            change_cbk=partial(removed, only_1st_diffs=False),
+            except_if_diff_cbk=self.except_if_removed_diff
+        )
+        compare(
+            change_cbk=partial(added, only_1st_diffs=False),
+            except_if_diff_cbk=self.except_if_added_diff
+        )
 
     def compare_diff_with_author(
             self, changed_author: list, changed_author_ixs: list,
@@ -344,15 +321,14 @@ class CompareDiffWithAuthor(ABC):
         else:
             except_msg = ''
 
-        how_fix = self.how_fix_msg if diffs_to_make else ''
-
         if except_msg:
             decline_args = {
                 'add_item': author_item,
                 'remove_item': student_item,
-                'how_fix': how_fix,
+                'how_fix': self.how_fix_msg,
                 'diffs_to_make_text': diffs_to_make.text,
-                'diffs_to_make_line_pos': str(diffs_to_make.line_pos - 1),
+                'text_before_missing_item': (
+                    diffs_to_make.text_before_missing_item),
                 'checked_item_name': self.checked_item_name,
                 'student_item': student_item,
                 'author_item': author_item,
@@ -364,6 +340,7 @@ class CompareDiffWithAuthor(ABC):
             self, author_item, student_item, diffs_to_make: DiffsToMake):
         """Compile message and raise exception with if items removed from
         precode differ in student and author."""
+        self.diffs_to_make = diffs_to_make
         if author_item:
             if student_item:
                 except_msg = self.remove_or_edit_item_msg
@@ -378,13 +355,10 @@ class CompareDiffWithAuthor(ABC):
             decline_args = {
                 'add_item': student_item,  # incorrectly removed
                 'remove_item': author_item,  # should have been removed
-                'how_fix': (
-                    'Изменения необходимо внести '
-                    'после строки прекода №{diffs_to_make_line_pos} '
-                    '(строки комментариев не учитываются).'
-                ),
+                'how_fix': self.how_fix_msg or '',
                 'diffs_to_make_text': diffs_to_make.text,
-                'diffs_to_make_line_pos': diffs_to_make.line_pos - 1,
+                'text_before_missing_item': (
+                    diffs_to_make.text_before_missing_item),
                 'checked_item_name': self.checked_item_name,
             }
             except_msg = self.decline(except_msg, decline_args)
@@ -453,10 +427,69 @@ class CompareDiffWithAuthor(ABC):
                                difflib.ndiff(
                                    student_item.split('\n'),
                                    author_item.split('\n'))))
-                diffs_to_make.line_pos = min(author_ix, student_ix)
+
+                precode_pos = min(author_ix, student_ix)
+                fallback_for_ambiguity = (
+                    f'(Строка прекода {min(1, precode_pos - 2)})')
+                try:
+                    fallback_for_ambiguity = '\n'.join(self.precode_items[:
+                                                                          precode_pos - 1]) + ' (прекод)'
+                except IndexError:
+                    pass
+
+                # find code before target changes
+                if author_item:
+                    # author block missing from student code or changed
+                    diffs_to_make.text_before_missing_item = (
+                        self._get_text_before_given(
+                            self.author_items, author_item,
+                            fallback_for_ambiguity
+                        ))
+                elif student_item:
+                    # student block missing from author code or changed
+                    in_sudent = (
+                        self._get_text_before_given(
+                            self.student_items, student_item,
+                            fallback_for_ambiguity
+                        ))
+                    in_author = (
+                        self._get_text_before_given(
+                            self.author_items, student_item,
+                            fallback_for_ambiguity
+                        ))
+                    if fallback_for_ambiguity in [in_author, in_sudent]:
+                        diffs_to_make.text_before_missing_item = (
+                            fallback_for_ambiguity
+                        )
+                    else:
+                        diffs_to_make.text_before_missing_item = (
+                            in_sudent if in_sudent else in_author
+                        )
+
                 return author_item, student_item, diffs_to_make
         author_item = student_item = ''
         return author_item, student_item, diffs_to_make
+
+    def _get_text_before_given(
+            self, text_lines: Iterable[str], given_text: str,
+            fallback_for_ambiguity: Optional[str]
+    ) -> Optional[str]:
+        text = '\n'.join(text_lines)
+        author_item_pos = text.find(given_text)
+        if author_item_pos >= 0:
+            if text.find(given_text, author_item_pos + 1) >= 0:
+                # ambiguous match, use fallback_for_ambiguity
+                return fallback_for_ambiguity
+            before_author_item_lines = text[:author_item_pos].strip(
+                '\n').split('\n')
+            if len(before_author_item_lines) > 3:
+                # append ... at start to indicate text was omitted
+                before_author_item_text = '\n'.join(
+                    chain(['...'], before_author_item_lines[-3:]))
+            else:
+                before_author_item_text = '\n'.join(
+                    before_author_item_lines[-3:])
+            return before_author_item_text
 
 
 def comments_re():
@@ -603,12 +636,12 @@ def lesson_dir(is_building):
 
 @pytest.fixture(scope='session', autouse=True)
 def is_in_production(is_building):
-    return not is_building
+    return 'IN_PRODUCTION' in os.environ
 
 
 @pytest.fixture(scope='session', autouse=True)
 def is_building():
-    return 'BUILDING' in os.environ
+    return 'BUILD_TESTS' in os.environ
 
 
 @pytest.fixture(scope='module')
@@ -704,10 +737,6 @@ def compare_file_to_author(
     comparer.compare_with_author()
 
 
-def comments_re():
-    return re.compile(r'\s*<!--[\w\W]+?-->')
-
-
 @pytest.fixture(scope='module')
 def base_path_template():
     return '{}/templates/base.html'
@@ -731,6 +760,9 @@ def added(ndiff: list, diff_from: list, only_1st_diffs=False
 
 class YapTestingException(Exception):
     pass
+
+
+RQ = ''
 
 
 class PytestRunner:
@@ -762,7 +794,12 @@ class PytestRunner:
 
     @staticmethod
     def clean_msg(msg):
-        cleaned = re.sub(r'^E\s+', '', msg, flags=re.MULTILINE)
+        cleaned = msg
+        err_prefixes = re.findall(r'^E\s+', cleaned, flags=re.MULTILINE)
+        if err_prefixes:
+            cleaned = re.sub(
+                fr'^{err_prefixes[0]}', '', cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r'^E\s+', '', cleaned, flags=re.MULTILINE)
         cleaned = cleaned.replace('assert False', '')
         cleaned = cleaned.rstrip('\n')
         return cleaned
@@ -776,7 +813,7 @@ class PytestRunner:
                 self.args.append(f'-k {self.test_name_contains_expr}')
             self.args.append(str(Path(self.path).as_posix()))
             code = pytest.main(args=self.args)
-        if code == 1:
+        if int(code) != 0:
             cleaned_msg = ''
             traceback_str = '\n'.join(traceback)
             if self.strip_traceback_to_err:
@@ -790,6 +827,9 @@ class PytestRunner:
                     cleaned_msg = self.clean_msg(found[-1][1])
             if cleaned_msg:
                 assert False, cleaned_msg
+
+
+LQ = ''
 
 
 class DiffGetter:
@@ -832,7 +872,7 @@ class DiffGetter:
         self.assert_diff_code()
 
         if for_diff_code == self.diff_code_del:
-            self.skip_codes = ({self.diff_code_add, self.diff_code_inf})
+            self.skip_codes = ({self.diff_code_add})
         elif for_diff_code == self.diff_code_add:
             self.skip_codes = ({self.diff_code_inf})
         else:
@@ -846,8 +886,8 @@ class DiffGetter:
     @staticmethod
     def sort_ndiff_items(ndiff_items):
         # sort items within blocks with changes based
-        # - on `+`/`-` marker, with marker `?` stuck to its preceding line
-        # - on the position of marked line within block
+        # 1. on `+`/`-` marker, with marker `?` stuck to its preceding line
+        # 2. on the position of marked line within block
         order = []
         block_ix = 0
         prev_marker: Optional[str] = None
@@ -879,12 +919,23 @@ class DiffGetter:
         """
         See class docs for description
 
-        :param only_1st_diffs: for several consecutive lines that differ only
-            includes the 1st one in the return value
-        :returns: a tuple with list of changed lines/blocks of text and
+        Args:
+            only_1st_diffs: for several consecutive lines that differ only
+                includes the 1st one in the return value
+
+        Returns: a tuple with list of changed lines/blocks of text and
             their positions  in the `self.diff_from` list.
         """
         result_dict = defaultdict(list)
+        skipped = False
+
+        def advance_iters(advance_dir_from=False):
+            result_dict[self.state.diff_from_line_ix].append(
+                self.state.diff_line_no_code)
+            self.advance_ndiff()
+            if advance_dir_from:
+                self.advance_diff_from()
+
         while True:
             try:
                 if self.state.diff_code == self.for_diff_code:
@@ -892,23 +943,28 @@ class DiffGetter:
                         # no need to advance self.diff_from_iter on each
                         # addition, fast forwarding self.ndiff_iter
                         while self.state.diff_code == self.for_diff_code:
-                            result_dict[self.state.diff_from_line_ix].append(
-                                self.state.diff_line_no_code)
-                            self.advance_ndiff()
+                            advance_iters(advance_dir_from=False)
                     else:
                         # for each deletion a line is present both in
                         # self.diff_from and self.ndiff, so we need to advance
                         # corresponding iterators simultaneously
-                        result_dict[self.state.diff_from_line_ix].append(
-                            self.state.diff_line_no_code)
-                        self.advance_ndiff()
-                        self.advance_diff_from()
+                        advance_iters(advance_dir_from=True)
+                    skipped = False
                 elif self.state.diff_code in self.skip_codes:
                     self.advance_ndiff()
+                    skipped = True
+                elif self.state.diff_code == self.diff_code_inf:
+                    if skipped:
+                        self.advance_ndiff()
+                    else:
+                        advance_iters(advance_dir_from=(
+                                self.for_diff_code == self.diff_code_del))
+                    skipped = False
                 elif self.state.diff_code == self.diff_code_eql or (
                         self.state.diff_code == self.diff_code_del):
                     self.advance_ndiff()
                     self.advance_diff_from()
+                    skipped = False
                 else:
                     assert False
 
@@ -934,7 +990,8 @@ class DiffGetter:
         Transforms dict
         {1: ['line1.1', 'line1.2'], 2: ['line2']}
         into to
-        ('line1.1\nline1.2', 'line2'), (1, 2)"""
+        ('line1.1\nline1.2', 'line2'), (1, 2)
+        """
 
         def join_lines(lines: list) -> Optional[str]:
             nonlocal only_1st_diffs
@@ -1149,11 +1206,13 @@ class CompareLinesDiffWithAuthor(CompareDiffWithAuthor):
         remain.
         """
         return (
-            'Убедитесь, что код \n'
-            '`{add_item}` \n'
-            'есть в решении, не перемещён, не дублируется '
-            'и что в нём нет ошибок.\n'
-            '{how_fix}'
+            f'Убедитесь, что код \n'
+            f'\n'
+            f'{LQ}{{add_item}}{RQ} \n'
+            f'\n'
+            f'есть в решении, не перемещён, не дублируется '
+            f'и что в нём нет ошибок.\n'
+            f'{{how_fix}}'
         )
 
     @property
@@ -1165,25 +1224,33 @@ class CompareLinesDiffWithAuthor(CompareDiffWithAuthor):
         remain.
         """
         if self.student_item:
-            return (
-                'Попробуйте вставить код перед, после или вместо кода\n '
-                '\n'
-                '`{student_item}`\n'
-                '\n'
-                'В последнем случае в него '
-                'необходимо внести следующие изменения '
-                'после строки прекода №{diffs_to_make_line_pos} '
-                '(строки комментариев не учитываются): '
-                '\n'
-                '`\n{diffs_to_make_text}\n`'
-                '(где `-` - удалить, `+` - добавить, `?` - позиция различий).'
+            result = (
+                f'\n'
+                f'Фрагмент вашего кода, в котором обнаружена ошибка:\n '
+                f'\n'
+                f'{LQ}{{student_item}}{RQ}\n'
+                f'\n'
+                f'Изменения, которые следует внести;'
+                f'[-] удалить символ  или строку, [+] добавить, '
+                f'[?] строка с указанием различий, [^] позиция различия'
+                f'\n'
+                f'{LQ}\n{{diffs_to_make_text}}\n{RQ}'
             )
+            if self.diffs_to_make.text_before_missing_item:
+                result += (
+                    f'\n'
+                    f'Изменения необходимо внести после фрагмента кода\n'
+                    f'\n'
+                    f'{{text_before_missing_item}}'
+                )
+            return result
         else:
-            return (
-                'Изменения необходимо внести '
-                'после строки прекода №{diffs_to_make_line_pos} '
-                '(строки комментариев не учитываются).'
-            )
+            if self.diffs_to_make.text_before_missing_item:
+                return (
+                    f'Изменения необходимо внести после фрагмента кода\n'
+                    f'\n'
+                    f'{{text_before_missing_item}}'
+                )
 
     @property
     def match_n_items_msg(self):
@@ -1215,11 +1282,11 @@ class CompareLinesDiffWithAuthor(CompareDiffWithAuthor):
         remain.
         """
         return (
-            'Код\n'
-            '`{remove_item}`\n'
-            'необходимо изменить или удалить '
-            'и убедиться, что он не дублируется.\n '
-            '{how_fix}'
+            f'Код\n'
+            f'{LQ}{{remove_item}}{RQ}\n'
+            f'необходимо изменить или удалить '
+            f'и убедиться, что он не дублируется.\n '
+            f'{{how_fix}}'
         )
 
     def make_items(self, student_items: list, author_items: list,
@@ -1339,7 +1406,10 @@ def test_header_html(
             assert_file_content_unchanged=not is_in_production
         )
     except YapTestingException as e:
-        assert False, f'Ошибка в файле `{student_path.relative_to(student_path.parent.parent.parent)}`:\n{str(e)}'
+        assert False, (
+            f'Ошибка в файле {LQ}'
+            f'{student_path.relative_to(student_path.parent.parent.parent)}'
+            f'{RQ}:\n{str(e)} ')
 
 
 def test_base_html(
@@ -1406,7 +1476,10 @@ def test_base_html(
             assert_file_content_unchanged=not is_in_production
         )
     except YapTestingException as e:
-        assert False, f'Ошибка в файле `{student_path.relative_to(student_path.parent.parent.parent)}`:\n{str(e)}'
+        assert False, (
+            f'Ошибка в файле {LQ}'
+            f'{student_path.relative_to(student_path.parent.parent.parent)}'
+            f'{RQ}:\n{str(e)} ')
 
 
 def test_list_html(
@@ -1472,7 +1545,10 @@ def test_list_html(
             assert_file_content_unchanged=not is_in_production
         )
     except YapTestingException as e:
-        assert False, f'Ошибка в файле `{student_path.relative_to(student_path.parent.parent.parent)}`:\n{str(e)}'
+        assert False, (
+            f'Ошибка в файле {LQ}'
+            f'{student_path.relative_to(student_path.parent.parent.parent)}'
+            f'{RQ}:\n{str(e)} ')
 
 
 def test_detail_html(
@@ -1523,7 +1599,10 @@ def test_detail_html(
             assert_file_content_unchanged=not is_in_production
         )
     except YapTestingException as e:
-        assert False, f'Ошибка в файле `{student_path.relative_to(student_path.parent.parent.parent)}`:\n{str(e)} '
+        assert False, (
+            f'Ошибка в файле {LQ}'
+            f'{student_path.relative_to(student_path.parent.parent.parent)}'
+            f'{RQ}:\n{str(e)} ')
 
 
 if __name__ == '__main__':

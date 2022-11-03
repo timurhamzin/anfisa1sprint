@@ -47,7 +47,7 @@ Dev/
     ├── LICENSE
     ├── pytest.ini  
     ├──  requirements.txt
-    └── READ.ME
+    └── README.md
 ```
 
 ### Активация виртуального окружения
