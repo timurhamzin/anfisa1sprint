@@ -2,7 +2,6 @@
 
 import difflib
 import os
-import pytest
 import re
 import sys
 from abc import ABC
@@ -20,6 +19,12 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Union
+
+import pytest
+
+
+class YapTestingException(Exception):
+    pass
 
 
 def read_text_file_asserting_content(
@@ -115,6 +120,43 @@ class CompareDiffWithAuthor(ABC):
         """The name of the kind of items being compared for use in
         except messages"""
         raise NotImplementedError
+
+    @property
+    def how_fix_msg(self):
+        """
+        Message to show to user.
+        Text in curly brackets will be replaced when message is rendered.
+        In cases like {option1/option2} only one of the options will
+        remain.
+        """
+        if self.student_item:
+            result = (
+                f'\n'
+                f'Фрагмент вашего кода, в котором обнаружена ошибка:\n '
+                f'\n'
+                f'{LQ}{{student_item}}{RQ}\n'
+                f'\n'
+                f'Изменения, которые следует внести;'
+                f'[-] удалить символ  или строку, [+] добавить, '
+                f'[?] строка с указанием различий, [^] позиция различия\n'
+                f'\n'
+                f'{LQ}{{diffs_to_make_text}}{RQ}\n'
+            )
+            if self.diffs_to_make.text_before_missing_item:
+                result += (
+                    f'\n'
+                    f'Изменения необходимо внести после фрагмента кода\n'
+                    f'\n'
+                    f'{LQ}{{text_before_missing_item}}{RQ}\n'
+                )
+            return result
+        else:
+            if self.diffs_to_make.text_before_missing_item:
+                return (
+                    f'Изменения необходимо внести после фрагмента кода\n'
+                    f'\n'
+                    f'{{text_before_missing_item}}'
+                )
 
     def decline(self, text, apply_dicts: Union[dict, Iterable[dict]]):
         if isinstance(apply_dicts, dict):
@@ -254,7 +296,7 @@ class CompareDiffWithAuthor(ABC):
 
         def compare(change_cbk: Callable, except_if_diff_cbk: Callable):
             """
-            
+
             Args:
                 change_cbk: callback looking up differences
                 except_if_diff_cbk: callback raising exception if diff found
@@ -517,16 +559,32 @@ def settings_path(dirname: str, settings_path_template) -> Path:
     return path
 
 
-def run_pytest_runner(__file__of_test):
+def run_pytest_runner(__file__of_test, setup_django: Optional[bool] = None):
     """
     Run tests from a test file.
     To be called from a test file like so:
 
     if __name__ == '__main__':
-        run_pytest_runner()
+        run_pytest_runner(__file__, setup_django=<True, False or None>)
 
-    This is how tests must be run in production
+    This is how tests must be run in production.
     """
+
+    def _setup_django():
+        import django
+        from django.conf import settings
+        if not settings.configured:
+            settings.configure()
+            django.setup()
+
+    if setup_django is None:
+        try:
+            _setup_django()
+        except Exception:
+            pass
+    elif setup_django:
+        _setup_django()
+
     pytest_runner = PytestRunner(__file__of_test)
     pytest_runner.run_capturing_traceback()
 
@@ -636,7 +694,7 @@ def lesson_dir(is_building):
 
 @pytest.fixture(scope='session', autouse=True)
 def is_in_production(author_dir):
-    return not os.path.isdir(author_dir)
+    return 'IN_PRODUCTION' in os.environ or not os.path.isdir(author_dir)
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -758,10 +816,6 @@ def added(ndiff: list, diff_from: list, only_1st_diffs=False
     return diff_getter.get_diff(only_1st_diffs)
 
 
-class YapTestingException(Exception):
-    pass
-
-
 RQ = ''
 
 
@@ -807,15 +861,21 @@ class PytestRunner:
     def run_capturing_traceback(self, with_args_for_webpack=False) -> None:
         if with_args_for_webpack:
             self.set_run_args_for_webpack()
-        with CapturingStdout() as traceback:
-            self.args = self.args.split()
-            if self.test_name_contains_expr:
-                self.args.append(f'-k {self.test_name_contains_expr}')
-            self.args.append(str(Path(self.path).as_posix()))
-            code = pytest.main(args=self.args)
+
+        traceback = []
+        system_cmd = [f'pytest "{str(Path(self.path).as_posix())}"']
+        with subprocess.Popen(
+                system_cmd, stdout=subprocess.PIPE, bufsize=1,
+                universal_newlines=True, shell=True, text=True,
+                env=os.environ) as p:
+            for line in p.stdout:
+                traceback.append(line)
+
+        code = p.returncode
+
         if int(code) != 0:
             cleaned_msg = ''
-            traceback_str = '\n'.join(traceback)
+            traceback_str = ''.join(traceback)
             if self.strip_traceback_to_err:
                 first_err_msg_re = (
                     r'^E\s+.*?(\w+Error|\w+Exception):([\w\W]+?)(?:^.+\1)')
@@ -1216,43 +1276,6 @@ class CompareLinesDiffWithAuthor(CompareDiffWithAuthor):
         )
 
     @property
-    def how_fix_msg(self):
-        """
-        Message to show to user.
-        Text in curly brackets will be replaced when message is rendered.
-        In cases like {option1/option2} only one of the options will
-        remain.
-        """
-        if self.student_item:
-            result = (
-                f'\n'
-                f'Фрагмент вашего кода, в котором обнаружена ошибка:\n '
-                f'\n'
-                f'{LQ}{{student_item}}{RQ}\n'
-                f'\n'
-                f'Изменения, которые следует внести;'
-                f'[-] удалить символ  или строку, [+] добавить, '
-                f'[?] строка с указанием различий, [^] позиция различия'
-                f'\n'
-                f'{LQ}\n{{diffs_to_make_text}}\n{RQ}'
-            )
-            if self.diffs_to_make.text_before_missing_item:
-                result += (
-                    f'\n'
-                    f'Изменения необходимо внести после фрагмента кода\n'
-                    f'\n'
-                    f'{{text_before_missing_item}}'
-                )
-            return result
-        else:
-            if self.diffs_to_make.text_before_missing_item:
-                return (
-                    f'Изменения необходимо внести после фрагмента кода\n'
-                    f'\n'
-                    f'{{text_before_missing_item}}'
-                )
-
-    @property
     def match_n_items_msg(self):
         """
         Message to show to user.
@@ -1283,7 +1306,9 @@ class CompareLinesDiffWithAuthor(CompareDiffWithAuthor):
         """
         return (
             f'Код\n'
+            f'\n'
             f'{LQ}{{remove_item}}{RQ}\n'
+            f'\n'
             f'необходимо изменить или удалить '
             f'и убедиться, что он не дублируется.\n '
             f'{{how_fix}}'
