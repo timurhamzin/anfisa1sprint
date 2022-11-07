@@ -629,14 +629,14 @@ def list_html_path(dirname: str, list_path_template) -> Path:
     return path
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope='session')
 def lesson_dir(is_building):
     return str(Path(__file__).parent.parent)
 
 
 @pytest.fixture(scope='session', autouse=True)
-def is_in_production(is_building):
-    return 'IN_PRODUCTION' in os.environ
+def is_in_production(author_dir):
+    return not os.path.isdir(author_dir)
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -747,7 +747,7 @@ def base_html_path(dirname: str, base_path_template) -> Path:
     return path
 
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def author_dir(lesson_dir):
     return (Path(lesson_dir) / 'author/').as_posix()
 
