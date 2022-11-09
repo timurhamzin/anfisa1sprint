@@ -1,27 +1,38 @@
 # -*- coding: utf-8 -*-
+import pytest
+import pytest_dependency
+import pytest_order
 
-import difflib
+# -*- coding: utf-8 -*-
+import pytest
+import pytest_dependency
+import pytest_order
 import os
-import re
 import subprocess
+import difflib
+import inspect
+import re
 import sys
-from abc import ABC
-from abc import abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass
 from functools import partial
 from io import StringIO
-from itertools import chain
 from pathlib import Path
-from typing import Callable
-from typing import Dict
-from typing import Iterable
-from typing import List
+from types import ModuleType
+from itertools import zip_longest, chain
 from typing import Optional
 from typing import Tuple
+from typing import List
 from typing import Union
+from typing import Iterable
+from dataclasses import dataclass
+from typing import Dict
+from abc import ABC
+from abc import abstractmethod
+from typing import Callable
 
-import pytest
+
+class YapTestingException(Exception):
+    pass
 
 
 def read_text_file_asserting_content(
@@ -152,7 +163,7 @@ class CompareDiffWithAuthor(ABC):
                 return (
                     f'Изменения необходимо внести после фрагмента кода\n'
                     f'\n'
-                    f'{{text_before_missing_item}}'
+                    f'{LQ}{{text_before_missing_item}}{RQ}\n'
                 )
 
     def decline(self, text, apply_dicts: Union[dict, Iterable[dict]]):
@@ -811,10 +822,6 @@ def added(ndiff: list, diff_from: list, only_1st_diffs=False
           ) -> Tuple[List[str], List[int]]:
     diff_getter = DiffGetter(ndiff, diff_from, for_diff_code='+ ')
     return diff_getter.get_diff(only_1st_diffs)
-
-
-class YapTestingException(Exception):
-    pass
 
 
 RQ = ''
